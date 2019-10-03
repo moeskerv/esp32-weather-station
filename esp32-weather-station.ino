@@ -1,0 +1,670 @@
+/** The MIT License (MIT)
+    based on the esp8266-weather-station by 2018 by Daniel Eichhorn
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+    See more at https://blog.squix.org
+*/
+
+/*****************************
+    Important: see settings.h to configure your settings!!!
+ * ***************************/
+
+#include <Arduino.h>
+#include <SPI.h>
+#include <Adafruit_STMPE610.h>
+#include <Adafruit_BME280.h>
+#include <sps30.h>
+#include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
+#include <JsonListener.h>
+#include <MiniGrafx.h>
+#include <Carousel.h>
+#include <ILI9341_SPI.h>
+#include <WiFi.h>
+
+#include "settings.h"
+#include "ArialRounded.h"
+#include "weathericons.h"
+#include "OpenWeatherMapCurrent.h"
+#include "OpenWeatherMapForecast.h"
+
+#define MINI_BLACK 0
+#define MINI_WHITE 1
+#define MINI_YELLOW 2
+#define MINI_BLUE 3
+
+#define BACKLIGHT_PWM_FRQ 5000
+#define BACKLIGHT_PWM_RES 8
+#define BACKLIGHT_PWM_CHN 0
+
+// defines the colors usable in the paletted 16 color frame buffer
+uint16_t palette[] = {ILI9341_BLACK, // 0
+                      ILI9341_WHITE, // 1
+                      ILI9341_YELLOW, // 2
+                      0x7E3C
+                     }; //3
+
+// Limited to 4 colors due to memory constraints
+int BITS_PER_PIXEL = 2; // 2^2 =  4 colors
+
+ILI9341_SPI tft = ILI9341_SPI(TFT_CS, TFT_DC);
+MiniGrafx gfx = MiniGrafx(&tft, BITS_PER_PIXEL, palette);
+Carousel carousel(&gfx, 0, 0, 240, 100);
+
+OpenWeatherMapCurrentData currentWeather;
+OpenWeatherMapForecastData forecasts[MAX_FORECASTS];
+simpleDSTadjust dstAdjusted(StartRule, EndRule);
+Adafruit_BME280 bme280;
+
+void updateData();
+void updateSensorData();
+void drawProgress(uint8_t percentage, String text);
+void drawTime();
+void drawWifiQuality();
+void drawCurrentWeather();
+void drawForecast();
+void drawForecastDetail(uint16_t x, uint16_t y, uint8_t dayIndex);
+void drawTempPM();
+
+String getTime(time_t *timestamp);
+const char* getMeteoconIconFromProgmem(String iconText);
+const char* getMiniMeteoconIconFromProgmem(String iconText);
+void drawForecast1(MiniGrafx *display, CarouselState* state, int16_t x, int16_t y);
+void drawForecast2(MiniGrafx *display, CarouselState* state, int16_t x, int16_t y);
+void drawForecast3(MiniGrafx *display, CarouselState* state, int16_t x, int16_t y);
+FrameCallback frames[] = { drawForecast1, drawForecast2, drawForecast3 };
+int frameCount = 1;
+
+// how many different screens do we have?
+
+long lastUpdate = millis();
+uint16_t screen = 0;
+time_t dstOffset = 0;
+float temp = 0;
+float humidity = 0;
+float pressure = 0;
+int sdsState = 0;
+struct sps30_measurement sds30Data;
+
+void connectWifi() {
+
+    static int network = 0;
+
+    if (WiFi.status() == WL_CONNECTED) return;
+
+    int i = 0;
+
+    while (WiFi.status() != WL_CONNECTED) {
+
+        if ((network == 0) || (network == 1)) {
+
+            Serial.println();
+            Serial.print("Connecting to WiFi ");
+            Serial.print(WIFI_SSID1);
+
+            // start with WiFi 2 office
+            WiFi.disconnect();
+            WiFi.mode(WIFI_STA);
+            WiFi.begin(WIFI_SSID1, WIFI_PASS1);
+
+            for (i = 0; i < 80; i += 10) {
+                //drawProgress(i, "Connecting to WiFi '" + String(WIFI_SSID1) + "'");
+                delay(1000);
+                Serial.print(".");
+                if (WiFi.status() == WL_CONNECTED) {
+                    network = 1;
+                    break;
+                }
+            }
+        }
+
+        if ((network == 0) || (network == 2)) {
+
+            // switch networks if still not connected (home)
+            if (WiFi.status() != WL_CONNECTED) {
+
+                Serial.println();
+                Serial.print("Connecting to WiFi ");
+                Serial.print(WIFI_SSID2);
+
+                WiFi.disconnect();
+                WiFi.mode(WIFI_STA);
+                WiFi.begin(WIFI_SSID2, WIFI_PASS2);
+
+                for (i = 0; i < 80; i += 10) {
+                    //drawProgress(i, "Connecting to WiFi '" + String(WIFI_SSID2) + "'");
+                    delay(1000);
+                    Serial.print(".");
+                    if (WiFi.status() == WL_CONNECTED) {
+                        network = 2;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    //drawProgress(100, "Connected to WiFi");
+    Serial.println("Connected...");
+}
+
+void setup() {
+    s16 result;
+
+    Serial.begin(115200);
+
+    // Turn TFT backlight on (needs to wired on ESP32)
+    Serial.println(TFT_LED);
+    pinMode(TFT_LED, OUTPUT);
+    digitalWrite(TFT_LED, HIGH);    // HIGH to Turn on;
+
+    /*
+    // configure backlight PWM, does not work in sleep mode!
+    ledcSetup(BACKLIGHT_PWM_CHN, BACKLIGHT_PWM_FRQ, BACKLIGHT_PWM_RES);
+    ledcAttachPin(TFT_LED, BACKLIGHT_PWM_CHN);
+    ledcWrite(BACKLIGHT_PWM_CHN, 128);  // set to 50%
+    */
+
+
+    gfx.init();
+    gfx.fillBuffer(MINI_BLACK);
+    gfx.commit();
+
+    Serial.println("Mounting file system...");
+    bool isFSMounted = SPIFFS.begin();
+    if (!isFSMounted) {
+        Serial.println("Formatting file system...");
+        drawProgress(50, "Formatting file system");
+        SPIFFS.format();
+    }
+    drawProgress(100, "Formatting done");
+
+    carousel.setFrames(frames, frameCount);
+    carousel.disableAllIndicators();
+
+    // start BME280
+    if (!bme280.begin()) {
+        Serial.println("Could not find a valid BME280 sensor, check wiring!");
+        while (1);
+    }
+    bme280.setSampling(Adafruit_BME280::MODE_FORCED,
+                       Adafruit_BME280::SAMPLING_X1, // temperature
+                       Adafruit_BME280::SAMPLING_X1, // pressure
+                       Adafruit_BME280::SAMPLING_X1, // humidity
+                       Adafruit_BME280::FILTER_OFF   );
+    Serial.println("Found BME280 sensor...");
+
+    // start SPS30
+    while (sps30_probe() != 0) {
+        Serial.print("SPS sensor probing failed\n");
+        delay(500);
+    }
+    Serial.println("SPS sensor probing successful...");
+    result = sps30_set_fan_auto_cleaning_interval_days(4); // clean all 4 days
+    if (result) {
+        Serial.print("error setting the auto-clean interval: ");
+        Serial.println(result);
+    }
+}
+
+void loop() {
+
+    static int cycle = 0;
+    static int task = 1 << UPDATE_TURN_SDS30_ON;
+    static int dataValid = 0;
+    int nextSleep = 0;
+    int timetoSensorUpdate = 0;
+    char *dstAbbrev;
+    time_t now = dstAdjusted.time(&dstAbbrev);
+    struct tm * timeinfo = localtime (&now);
+
+    // perform tasks scheduled
+    if (((task >> UPDATE_TURN_SDS30_ON) & 1U))  {
+        if (sps30_start_measurement() < 0) {
+            Serial.println("Error starting measurement");
+        }
+        else {
+            Serial.println("SPS30 on");
+            sdsState = 1;
+        }
+        // next sleep time and tasks
+        task &= ~(1UL << UPDATE_TURN_SDS30_ON);
+        nextSleep = 30; // 30s settle time for SDS30
+        task |= 1UL << UPDATE_SENSORS;
+        if (cycle == 0) task |= 1UL << UPDATE_FORECAST;
+    }
+    else if (((task >> UPDATE_SENSORS) & 1U) || ((task >> UPDATE_FORECAST) & 1U)) {
+
+        // connect to WiFi as we need to fetch some data
+        if (WiFi.status() != WL_CONNECTED) {
+            connectWifi();
+        }
+
+        if ((task >> UPDATE_SENSORS) & 1U)  {
+            updateSensorData();
+            task &= ~(1UL << UPDATE_SENSORS);
+            ++cycle %= 3;
+            lastUpdate = millis();
+            sdsState = 0;
+        }
+
+        if ((task >> UPDATE_FORECAST) & 1U)  {
+            updateData();
+            task &= ~(1UL << UPDATE_FORECAST);
+        }
+
+        // disconnect WiFi
+        WiFi.disconnect();
+        while (WiFi.status() == WL_CONNECTED) delay(500);
+        dataValid = 1;
+    }
+
+    // update screen
+    gfx.fillBuffer(MINI_BLACK);
+    if (screen == 0) {
+        drawTime();
+        drawWifiQuality();
+        carousel.update();
+        drawCurrentWeather();
+        drawTempPM();
+    }
+    gfx.commit();
+
+    // nextSleep, if still 0 then get next value
+    if (nextSleep == 0) {
+        // sleep until next minute starts
+        nextSleep = 60 - timeinfo->tm_sec; // wait until next minute increment in order to update time
+
+        // if next sensor read is less than the time until next minute increment away, then wait until sensor update
+        timetoSensorUpdate = (UPDATE_INTERVAL_SECS - 30) - ((millis() - lastUpdate) / 1000);
+        if (timetoSensorUpdate < nextSleep) {
+            nextSleep = timetoSensorUpdate;
+            task |= 1UL << UPDATE_TURN_SDS30_ON;
+        }
+    }
+
+    Serial.println("Seconds to sleep: " + String(nextSleep));
+    Serial.println("Cycle: " + String(cycle));
+    Serial.println("Task: " + String(task));
+
+    now = dstAdjusted.time(&dstAbbrev);
+    timeinfo = localtime (&now);
+    Serial.println("Before sleep: " + String(timeinfo->tm_hour) + ":" + String(timeinfo->tm_min) + ":" + String(timeinfo->tm_sec));
+
+    esp_sleep_enable_timer_wakeup(nextSleep * 1000000);
+    Serial.flush();
+    esp_light_sleep_start();
+    // delay(nextSleep * 1000);
+    
+    now = dstAdjusted.time(&dstAbbrev);
+    timeinfo = localtime (&now);
+    Serial.println("After wakeup: " + String(timeinfo->tm_hour) + ":" + String(timeinfo->tm_min) + ":" + String(timeinfo->tm_sec));
+}
+
+void sendDataToOpenSenseMap() {
+
+    // print time in serial log
+    char *dstAbbrev;
+    time_t now = dstAdjusted.time(&dstAbbrev);
+    struct tm * timeinfo = localtime (&now);
+
+    Serial.println("Send data to OSM: " + String(timeinfo->tm_hour) + ":" + String(timeinfo->tm_min) + ":" + String(timeinfo->tm_sec));
+
+    //create JSON object
+    const int capacity = JSON_OBJECT_SIZE(15);
+    DynamicJsonDocument json(capacity);
+
+    json[SENSOR1_ID] = String(temp, 2);
+    json[SENSOR2_ID] = String(pressure, 2);
+    json[SENSOR3_ID] = String(humidity, 2);
+    json[SENSOR4_ID] = String(sds30Data.mc_10p0, 2);
+    json[SENSOR5_ID] = String(sds30Data.mc_4p0, 2);
+    json[SENSOR6_ID] = String(sds30Data.mc_2p5, 2);
+    json[SENSOR7_ID] = String(sds30Data.mc_1p0, 2);
+
+    char JSONmessageBuffer[300];
+    serializeJson(json, JSONmessageBuffer);
+    Serial.println(JSONmessageBuffer);
+
+    // create HTTPS request
+    WiFiClientSecure client;
+    if (!client.connect("api.opensensemap.org", 443)) {
+        Serial.println("Connection failed");
+        ESP.restart();
+    }
+    else {
+        Serial.println("Connected to OSM server");
+        client.println("POST https://api.opensensemap.org/boxes/" SENSEBOX_ID "/data HTTP/1.1");
+        client.println("Host: api.opensensemap.org");
+        client.println("Connection: close");
+        client.print("Content-Length: ");
+        client.println(measureJson(json));
+        client.println("Content-Type: application/json");
+        client.println();
+        serializeJson(json, client);
+
+        while (client.connected()) {
+            String line = client.readStringUntil('\n');
+            if (line == "\r") {
+                Serial.println("headers received");
+                break;
+            }
+        }
+
+        // if there are incoming bytes available
+        // from the server, read them and print them:
+        while (client.available()) {
+            char c = client.read();
+            Serial.write(c);
+        }
+        client.stop();
+    }
+}
+
+// Update the sensor data
+void updateSensorData() {
+
+    // get readings from BME280 sensor
+    bme280.takeForcedMeasurement();
+    delay(100);
+    temp = bme280.readTemperature();
+    pressure = bme280.readPressure() / 100;
+    humidity = bme280.readHumidity();
+
+    Serial.print("Updated BME280 data: ");
+    Serial.print(temp);
+    Serial.print(" ");
+    Serial.print(pressure);
+    Serial.print(" ");
+    Serial.println(humidity);
+
+    // get readngs from SDS30 sensor
+    s16 result = 0;
+    u16 data_ready = 0;
+    /*
+        result = sps30_start_measurement();
+        if (result < 0) {
+            Serial.print("Error starting measurement\n");
+        }
+        delay(1000); //let sensor settle for 5 s
+    */
+    do {
+        result = sps30_read_data_ready(&data_ready);
+        if (result < 0) {
+            Serial.print("SDS30: Error reading data-ready flag: ");
+            Serial.println(result);
+        }
+        else if (!data_ready)
+            Serial.println("SDS30: Data not ready, no new measurement available");
+        else
+            break;
+        delay(100); /* retry in 100ms */
+    } while (1);
+
+    result = sps30_read_measurement(&sds30Data);
+    if (result < 0) {
+        Serial.println("error reading measurement");
+    }
+
+    result = sps30_stop_measurement();
+    if (result < 0) {
+        Serial.print("Error stopping measurement\n");
+    }
+
+    Serial.println("Updated SDS30 data: ");
+    Serial.print("PM  1.0: ");
+    Serial.println(sds30Data.mc_1p0);
+    Serial.print("PM  2.5: ");
+    Serial.println(sds30Data.mc_2p5);
+    Serial.print("PM  4.0: ");
+    Serial.println(sds30Data.mc_4p0);
+    Serial.print("PM 10.0: ");
+    Serial.println(sds30Data.mc_10p0);
+    Serial.print("NC  0.5: ");
+    Serial.println(sds30Data.nc_0p5);
+    Serial.print("NC  1.0: ");
+    Serial.println(sds30Data.nc_1p0);
+    Serial.print("NC  2.5: ");
+    Serial.println(sds30Data.nc_2p5);
+    Serial.print("NC  4.0: ");
+    Serial.println(sds30Data.nc_4p0);
+    Serial.print("NC 10.0: ");
+    Serial.println(sds30Data.nc_10p0);
+
+    Serial.print("Typical partical size: ");
+    Serial.println(sds30Data.typical_particle_size);
+
+    sendDataToOpenSenseMap();
+}
+
+// Update the internet based information and update screen
+void updateData() {
+
+    gfx.fillBuffer(MINI_BLACK);
+    gfx.setFont(ArialRoundedMTBold_14);
+
+    drawProgress(10, "Updating time...");
+    Serial.println("Updating time...");
+    configTime(UTC_OFFSET * 3600, 0, NTP_SERVERS);
+    while (!time(nullptr)) {
+        Serial.print("#");
+        delay(100);
+    }
+    // calculate for time calculation how much the dst class adds.
+    dstOffset = UTC_OFFSET * 3600 + dstAdjusted.time(nullptr) - time(nullptr);
+    Serial.printf("Time difference for DST: %d\n", dstOffset);
+
+    drawProgress(50, "Updating conditions...");
+    OpenWeatherMapCurrent *currentWeatherClient = new OpenWeatherMapCurrent();
+    currentWeatherClient->setMetric(IS_METRIC);
+    currentWeatherClient->setLanguage(OPEN_WEATHER_MAP_LANGUAGE);
+    currentWeatherClient->updateCurrentById(&currentWeather, OPEN_WEATHER_MAP_APP_ID, OPEN_WEATHER_MAP_LOCATION_ID);
+    //currentWeatherClient->updateCurrent(&currentWeather, OPEN_WEATHER_MAP_APP_ID, OPEN_WEATHER_MAP_LOCATION);
+    delete currentWeatherClient;
+    currentWeatherClient = nullptr;
+
+    drawProgress(70, "Updating forecasts...");
+    OpenWeatherMapForecast *forecastClient = new OpenWeatherMapForecast();
+    forecastClient->setMetric(IS_METRIC);
+    forecastClient->setLanguage(OPEN_WEATHER_MAP_LANGUAGE);
+    uint8_t allowedHours[] = {12, 0};
+    forecastClient->setAllowedHours(allowedHours, sizeof(allowedHours));
+    forecastClient->updateForecastsById(forecasts, OPEN_WEATHER_MAP_APP_ID, OPEN_WEATHER_MAP_LOCATION_ID, MAX_FORECASTS);
+    //forecastClient->updateForecasts(forecasts, OPEN_WEATHER_MAP_APP_ID, OPEN_WEATHER_MAP_LOCATION, MAX_FORECASTS);
+    delete forecastClient;
+    forecastClient = nullptr;
+
+    delay(1000);
+}
+
+// Progress bar helper
+void drawProgress(uint8_t percentage, String text) {
+    gfx.fillBuffer(MINI_BLACK);
+    gfx.drawPalettedBitmapFromPgm(20, 5, ThingPulseLogo);
+    gfx.setFont(ArialRoundedMTBold_14);
+    gfx.setTextAlignment(TEXT_ALIGN_CENTER);
+    gfx.setColor(MINI_WHITE);
+    gfx.drawString(120, 90, "https://thingpulse.com");
+    gfx.setColor(MINI_YELLOW);
+
+    gfx.drawString(120, 146, text);
+    gfx.setColor(MINI_WHITE);
+    gfx.drawRect(10, 168, 240 - 20, 15);
+    gfx.setColor(MINI_BLUE);
+    gfx.fillRect(12, 170, 216 * percentage / 100, 11);
+
+    gfx.commit();
+}
+
+// draws the clock
+void drawTime() {
+
+    char time_str[11];
+    char *dstAbbrev;
+    time_t now = dstAdjusted.time(&dstAbbrev);
+    struct tm * timeinfo = localtime (&now);
+
+    gfx.setTextAlignment(TEXT_ALIGN_CENTER);
+    gfx.setFont(ArialRoundedMTBold_14);
+    gfx.setColor(MINI_WHITE);
+    String date = WDAY_NAMES[timeinfo->tm_wday] + " " + MONTH_NAMES[timeinfo->tm_mon] + " " + String(timeinfo->tm_mday) + " " + String(1900 + timeinfo->tm_year);
+    gfx.drawString(120, 6, date);
+
+    gfx.setFont(ArialRoundedMTBold_36);
+
+    if (IS_STYLE_12HR) {
+        int hour = (timeinfo->tm_hour + 11) % 12 + 1; // take care of noon and midnight
+        sprintf(time_str, "%2d:%02d:%02d\n", hour, timeinfo->tm_min, timeinfo->tm_sec);
+        gfx.drawString(120, 20, time_str);
+    } else {
+        //sprintf(time_str, "%02d:%02d:%02d\n", timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
+        sprintf(time_str, "%02d:%02d\n", timeinfo->tm_hour, timeinfo->tm_min);
+        gfx.drawString(120, 20, time_str);
+    }
+
+    gfx.setTextAlignment(TEXT_ALIGN_LEFT);
+    gfx.setFont(ArialMT_Plain_10);
+    gfx.setColor(MINI_BLUE);
+    if (IS_STYLE_12HR) {
+        sprintf(time_str, "%s\n%s", dstAbbrev, timeinfo->tm_hour >= 12 ? "PM" : "AM");
+        gfx.drawString(195, 27, time_str);
+    } else {
+        sprintf(time_str, "%s", dstAbbrev);
+        gfx.drawString(195, 27, time_str);  // Known bug: Cuts off 4th character of timezone abbreviation
+    }
+}
+
+// draws current weather information
+void drawCurrentWeather() {
+    gfx.setTransparentColor(MINI_BLACK);
+    gfx.drawPalettedBitmapFromPgm(0, 55, getMeteoconIconFromProgmem(currentWeather.icon));
+    // Weather Text
+
+    gfx.setFont(ArialRoundedMTBold_14);
+    gfx.setColor(MINI_BLUE);
+    gfx.setTextAlignment(TEXT_ALIGN_RIGHT);
+    // gfx.drawString(220, 65, DISPLAYED_CITY_NAME);
+    gfx.drawString(220, 65, currentWeather.cityName);
+
+    gfx.setFont(ArialRoundedMTBold_36);
+    gfx.setColor(MINI_WHITE);
+    gfx.setTextAlignment(TEXT_ALIGN_RIGHT);
+
+    gfx.drawString(220, 78, String(currentWeather.temp, 1) + (IS_METRIC ? "°C" : "°F"));
+
+    gfx.setFont(ArialRoundedMTBold_14);
+    gfx.setColor(MINI_YELLOW);
+    gfx.setTextAlignment(TEXT_ALIGN_RIGHT);
+    gfx.drawString(220, 118, currentWeather.description);
+
+}
+
+void drawForecast1(MiniGrafx *display, CarouselState* state, int16_t x, int16_t y) {
+    drawForecastDetail(x + 10, y + 165, 0);
+    drawForecastDetail(x + 95, y + 165, 1);
+    drawForecastDetail(x + 180, y + 165, 2);
+}
+
+void drawForecast2(MiniGrafx *display, CarouselState* state, int16_t x, int16_t y) {
+    drawForecastDetail(x + 10, y + 165, 3);
+    drawForecastDetail(x + 95, y + 165, 4);
+    drawForecastDetail(x + 180, y + 165, 5);
+}
+
+void drawForecast3(MiniGrafx *display, CarouselState* state, int16_t x, int16_t y) {
+    drawForecastDetail(x + 10, y + 165, 6);
+    drawForecastDetail(x + 95, y + 165, 7);
+    drawForecastDetail(x + 180, y + 165, 8);
+}
+
+// helper for the forecast columns
+void drawForecastDetail(uint16_t x, uint16_t y, uint8_t dayIndex) {
+    gfx.setColor(MINI_YELLOW);
+    gfx.setFont(ArialRoundedMTBold_14);
+    gfx.setTextAlignment(TEXT_ALIGN_CENTER);
+    time_t time = forecasts[dayIndex].observationTime + dstOffset;
+    struct tm * timeinfo = localtime (&time);
+    gfx.drawString(x + 25, y - 15, WDAY_NAMES[timeinfo->tm_wday] + " " + String(timeinfo->tm_hour) + ":00");
+
+    gfx.setColor(MINI_WHITE);
+    gfx.drawString(x + 25, y, String(forecasts[dayIndex].temp, 1) + (IS_METRIC ? "°C" : "°F"));
+
+    gfx.drawPalettedBitmapFromPgm(x, y + 15, getMiniMeteoconIconFromProgmem(forecasts[dayIndex].icon));
+    gfx.setColor(MINI_BLUE);
+    gfx.drawString(x + 25, y + 60, String(forecasts[dayIndex].rain, 1) + (IS_METRIC ? "mm" : "in"));
+}
+
+void drawTempPM() {
+    gfx.setTextAlignment(TEXT_ALIGN_LEFT);
+    gfx.setColor(MINI_YELLOW);
+    gfx.drawString(5, 250, "Temp:");
+    gfx.drawString(5, 265, "Druck:");
+    gfx.drawString(5, 280, "rel. LF:");
+    gfx.drawString(5, 295, "SDS30:");
+    gfx.drawString(145, 250, "PM 1.0:");
+    gfx.drawString(145, 265, "PM 2.5:");
+    gfx.drawString(145, 280, "PM 4.0:");
+    gfx.drawString(145, 295, "PM 10.0:");
+
+    gfx.setColor(MINI_WHITE);
+    gfx.drawString(70, 250, String(temp, 1) + "°C");
+    gfx.drawString(70, 265, String(pressure, 1));
+    gfx.drawString(70, 280, String(humidity, 0) + " %");
+    gfx.drawString(70, 295, sdsState ? "An":"Aus");
+    gfx.drawString(205, 250, String(sds30Data.mc_1p0, 1));
+    gfx.drawString(205, 265, String(sds30Data.mc_2p5, 1));
+    gfx.drawString(205, 280, String(sds30Data.mc_4p0, 1));
+    gfx.drawString(205, 295, String(sds30Data.mc_10p0, 1));
+}
+
+// converts the dBm to a range between 0 and 100%
+int8_t getWifiQuality() {
+    int32_t dbm = WiFi.RSSI();
+    if (dbm <= -100) {
+        return 0;
+    } else if (dbm >= -50) {
+        return 100;
+    } else {
+        return 2 * (dbm + 100);
+    }
+}
+
+void drawWifiQuality() {
+    int8_t quality = getWifiQuality();
+    gfx.setColor(MINI_WHITE);
+    gfx.setTextAlignment(TEXT_ALIGN_RIGHT);
+    gfx.drawString(228, 9, String(quality) + "%");
+    for (int8_t i = 0; i < 4; i++) {
+        for (int8_t j = 0; j < 2 * (i + 1); j++) {
+            if (quality > i * 25 || j == 0) {
+                gfx.setPixel(230 + 2 * i, 18 - j);
+            }
+        }
+    }
+}
+
+void calibrationCallback(int16_t x, int16_t y) {
+    gfx.setColor(1);
+    gfx.fillCircle(x, y, 10);
+}
+
+String getTime(time_t *timestamp) {
+    struct tm *timeInfo = gmtime(timestamp);
+
+    char buf[6];
+    sprintf(buf, "%02d:%02d", timeInfo->tm_hour, timeInfo->tm_min);
+    return String(buf);
+}
