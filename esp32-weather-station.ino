@@ -36,6 +36,7 @@
 #include <WiFi.h>
 
 #include "settings.h"
+#include "settings_private.h"
 #include "ArialRounded.h"
 #include "weathericons.h"
 #include "OpenWeatherMapCurrent.h"
