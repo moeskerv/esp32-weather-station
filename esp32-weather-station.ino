@@ -31,7 +31,6 @@
 #include <ArduinoJson.h>
 #include <JsonListener.h>
 #include <MiniGrafx.h>
-#include <Carousel.h>
 #include <ILI9341_SPI.h>
 #include <WiFi.h>
 
@@ -63,7 +62,7 @@ int BITS_PER_PIXEL = 2; // 2^2 =  4 colors
 
 ILI9341_SPI tft = ILI9341_SPI(TFT_CS, TFT_DC);
 MiniGrafx gfx = MiniGrafx(&tft, BITS_PER_PIXEL, palette);
-Carousel carousel(&gfx, 0, 0, 240, 100);
+//Carousel carousel(&gfx, 0, 0, 240, 100);
 
 OpenWeatherMapCurrentData currentWeather;
 OpenWeatherMapForecastData forecasts[MAX_FORECASTS];
@@ -76,23 +75,15 @@ void drawProgress(uint8_t percentage, String text);
 void drawTime();
 void drawWifiQuality();
 void drawCurrentWeather();
-void drawForecast();
+void drawForecast(int16_t x, int16_t y);
 void drawForecastDetail(uint16_t x, uint16_t y, uint8_t dayIndex);
 void drawTempPM();
 
 String getTime(time_t *timestamp);
 const char* getMeteoconIconFromProgmem(String iconText);
 const char* getMiniMeteoconIconFromProgmem(String iconText);
-void drawForecast1(MiniGrafx *display, CarouselState* state, int16_t x, int16_t y);
-void drawForecast2(MiniGrafx *display, CarouselState* state, int16_t x, int16_t y);
-void drawForecast3(MiniGrafx *display, CarouselState* state, int16_t x, int16_t y);
-FrameCallback frames[] = { drawForecast1, drawForecast2, drawForecast3 };
-int frameCount = 1;
-
-// how many different screens do we have?
 
 long lastUpdate = millis();
-uint16_t screen = 0;
 time_t dstOffset = 0;
 float temp = 0;
 float humidity = 0;
@@ -193,9 +184,6 @@ void setup() {
     }
     drawProgress(100, "Formatting done");
 
-    carousel.setFrames(frames, frameCount);
-    carousel.disableAllIndicators();
-
     // start BME280
     if (!bme280.begin()) {
         Serial.println("Could not find a valid BME280 sensor, check wiring!");
@@ -226,11 +214,12 @@ void loop() {
     static int cycle = 0;
     static int task = 1 << UPDATE_TURN_SDS30_ON;
     static int dataValid = 0;
+
     int nextSleep = 0;
     int timetoSensorUpdate = 0;
     char *dstAbbrev;
-    time_t now = dstAdjusted.time(&dstAbbrev);
-    struct tm * timeinfo = localtime (&now);
+    time_t now;
+    struct tm * timeinfo;
 
     // perform tasks scheduled
     if (((task >> UPDATE_TURN_SDS30_ON) & 1U))  {
@@ -275,14 +264,16 @@ void loop() {
 
     // update screen
     gfx.fillBuffer(MINI_BLACK);
-    if (screen == 0) {
-        drawTime();
-        drawWifiQuality();
-        carousel.update();
-        drawCurrentWeather();
-        drawTempPM();
-    }
+    drawTime();
+    drawWifiQuality();
+    drawForecast(0, 0);
+    drawCurrentWeather();
+    drawTempPM();
     gfx.commit();
+
+    // get current time
+    now = dstAdjusted.time(&dstAbbrev);
+    timeinfo = localtime (&now);
 
     // nextSleep, if still 0 then get next value
     if (nextSleep == 0) {
@@ -300,16 +291,13 @@ void loop() {
     Serial.println("Seconds to sleep: " + String(nextSleep));
     Serial.println("Cycle: " + String(cycle));
     Serial.println("Task: " + String(task));
-
-    now = dstAdjusted.time(&dstAbbrev);
-    timeinfo = localtime (&now);
     Serial.println("Before sleep: " + String(timeinfo->tm_hour) + ":" + String(timeinfo->tm_min) + ":" + String(timeinfo->tm_sec));
 
     esp_sleep_enable_timer_wakeup(nextSleep * 1000000);
     Serial.flush();
     esp_light_sleep_start();
     // delay(nextSleep * 1000);
-    
+
     now = dstAdjusted.time(&dstAbbrev);
     timeinfo = localtime (&now);
     Serial.println("After wakeup: " + String(timeinfo->tm_hour) + ":" + String(timeinfo->tm_min) + ":" + String(timeinfo->tm_sec));
@@ -557,7 +545,6 @@ void drawCurrentWeather() {
     gfx.setFont(ArialRoundedMTBold_14);
     gfx.setColor(MINI_BLUE);
     gfx.setTextAlignment(TEXT_ALIGN_RIGHT);
-    // gfx.drawString(220, 65, DISPLAYED_CITY_NAME);
     gfx.drawString(220, 65, currentWeather.cityName);
 
     gfx.setFont(ArialRoundedMTBold_36);
@@ -573,22 +560,10 @@ void drawCurrentWeather() {
 
 }
 
-void drawForecast1(MiniGrafx *display, CarouselState* state, int16_t x, int16_t y) {
+void drawForecast(int16_t x, int16_t y) {
     drawForecastDetail(x + 10, y + 165, 0);
     drawForecastDetail(x + 95, y + 165, 1);
     drawForecastDetail(x + 180, y + 165, 2);
-}
-
-void drawForecast2(MiniGrafx *display, CarouselState* state, int16_t x, int16_t y) {
-    drawForecastDetail(x + 10, y + 165, 3);
-    drawForecastDetail(x + 95, y + 165, 4);
-    drawForecastDetail(x + 180, y + 165, 5);
-}
-
-void drawForecast3(MiniGrafx *display, CarouselState* state, int16_t x, int16_t y) {
-    drawForecastDetail(x + 10, y + 165, 6);
-    drawForecastDetail(x + 95, y + 165, 7);
-    drawForecastDetail(x + 180, y + 165, 8);
 }
 
 // helper for the forecast columns
@@ -624,7 +599,7 @@ void drawTempPM() {
     gfx.drawString(70, 250, String(temp, 1) + "°C");
     gfx.drawString(70, 265, String(pressure, 1));
     gfx.drawString(70, 280, String(humidity, 0) + " %");
-    gfx.drawString(70, 295, sdsState ? "An":"Aus");
+    gfx.drawString(70, 295, sdsState ? "An" : "Aus");
     gfx.drawString(205, 250, String(sds30Data.mc_1p0, 1));
     gfx.drawString(205, 265, String(sds30Data.mc_2p5, 1));
     gfx.drawString(205, 280, String(sds30Data.mc_4p0, 1));
