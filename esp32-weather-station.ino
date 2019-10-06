@@ -33,6 +33,7 @@
 #include <MiniGrafx.h>
 #include <ILI9341_SPI.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 
 #include "settings.h"
 #include "settings_private.h"
@@ -69,7 +70,7 @@ OpenWeatherMapForecastData forecasts[MAX_FORECASTS];
 simpleDSTadjust dstAdjusted(StartRule, EndRule);
 Adafruit_BME280 bme280;
 
-void updateData();
+void updateWeatherData();
 void updateSensorData();
 void drawProgress(uint8_t percentage, String text);
 void drawTime();
@@ -77,7 +78,7 @@ void drawWifiQuality();
 void drawCurrentWeather();
 void drawForecast(int16_t x, int16_t y);
 void drawForecastDetail(uint16_t x, uint16_t y, uint8_t dayIndex);
-void drawTempPM();
+void drawSensorValues();
 
 String getTime(time_t *timestamp);
 const char* getMeteoconIconFromProgmem(String iconText);
@@ -99,58 +100,58 @@ void connectWifi() {
 
     int i = 0;
 
-    while (WiFi.status() != WL_CONNECTED) {
+    if ((network == 0) || (network == 1)) {
 
-        if ((network == 0) || (network == 1)) {
+        Serial.println();
+        Serial.print("Connecting to WiFi ");
+        Serial.print(WIFI_SSID1);
+
+        // start with WiFi 2 office
+        WiFi.disconnect();
+        WiFi.mode(WIFI_STA);
+        WiFi.begin(WIFI_SSID1, WIFI_PASS1);
+
+        for (i = 0; i < 10; i ++) {
+            //drawProgress(i, "Connecting to WiFi '" + String(WIFI_SSID1) + "'");
+            delay(1000);
+            Serial.print(".");
+            if (WiFi.status() == WL_CONNECTED) {
+                network = 1;
+                break;
+            }
+        }
+    }
+
+    if ((network == 0) || (network == 2)) {
+
+        // switch networks if still not connected (home)
+        if (WiFi.status() != WL_CONNECTED) {
 
             Serial.println();
             Serial.print("Connecting to WiFi ");
-            Serial.print(WIFI_SSID1);
+            Serial.print(WIFI_SSID2);
 
-            // start with WiFi 2 office
             WiFi.disconnect();
             WiFi.mode(WIFI_STA);
-            WiFi.begin(WIFI_SSID1, WIFI_PASS1);
+            WiFi.begin(WIFI_SSID2, WIFI_PASS2);
 
-            for (i = 0; i < 80; i += 10) {
-                //drawProgress(i, "Connecting to WiFi '" + String(WIFI_SSID1) + "'");
+            for (i = 0; i < 10; i ++) {
+                //drawProgress(i, "Connecting to WiFi '" + String(WIFI_SSID2) + "'");
                 delay(1000);
                 Serial.print(".");
                 if (WiFi.status() == WL_CONNECTED) {
-                    network = 1;
+                    network = 2;
                     break;
-                }
-            }
-        }
-
-        if ((network == 0) || (network == 2)) {
-
-            // switch networks if still not connected (home)
-            if (WiFi.status() != WL_CONNECTED) {
-
-                Serial.println();
-                Serial.print("Connecting to WiFi ");
-                Serial.print(WIFI_SSID2);
-
-                WiFi.disconnect();
-                WiFi.mode(WIFI_STA);
-                WiFi.begin(WIFI_SSID2, WIFI_PASS2);
-
-                for (i = 0; i < 80; i += 10) {
-                    //drawProgress(i, "Connecting to WiFi '" + String(WIFI_SSID2) + "'");
-                    delay(1000);
-                    Serial.print(".");
-                    if (WiFi.status() == WL_CONNECTED) {
-                        network = 2;
-                        break;
-                    }
                 }
             }
         }
     }
 
-    //drawProgress(100, "Connected to WiFi");
-    Serial.println("Connected...");
+    if (WiFi.status() == WL_CONNECTED) Serial.println("Connected...");
+    else {
+        Serial.println("No WIFI found...");
+        WiFi.disconnect();
+    }
 }
 
 void setup() {
@@ -159,17 +160,13 @@ void setup() {
     Serial.begin(115200);
 
     // Turn TFT backlight on (needs to wired on ESP32)
-    Serial.println(TFT_LED);
     pinMode(TFT_LED, OUTPUT);
-    digitalWrite(TFT_LED, HIGH);    // HIGH to Turn on;
+    digitalWrite(TFT_LED, HIGH);    // LOW to Turn on;
 
-    /*
     // configure backlight PWM, does not work in sleep mode!
     ledcSetup(BACKLIGHT_PWM_CHN, BACKLIGHT_PWM_FRQ, BACKLIGHT_PWM_RES);
     ledcAttachPin(TFT_LED, BACKLIGHT_PWM_CHN);
     ledcWrite(BACKLIGHT_PWM_CHN, 128);  // set to 50%
-    */
-
 
     gfx.init();
     gfx.fillBuffer(MINI_BLACK);
@@ -207,100 +204,126 @@ void setup() {
         Serial.print("error setting the auto-clean interval: ");
         Serial.println(result);
     }
+
+    // enable Wifi modem sleep
+    esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
+    btStop();
+    WiFi.mode(WIFI_OFF);
 }
 
 void loop() {
 
     static int cycle = 0;
     static int task = 1 << UPDATE_TURN_SDS30_ON;
-    static int dataValid = 0;
+    static unsigned long previousMillis = 0;
+    static int nextSleep = 0;
 
-    int nextSleep = 0;
     int timetoSensorUpdate = 0;
     char *dstAbbrev;
     time_t now;
     struct tm * timeinfo;
 
-    // perform tasks scheduled
-    if (((task >> UPDATE_TURN_SDS30_ON) & 1U))  {
-        if (sps30_start_measurement() < 0) {
-            Serial.println("Error starting measurement");
-        }
-        else {
-            Serial.println("SPS30 on");
-            sdsState = 1;
-        }
-        // next sleep time and tasks
-        task &= ~(1UL << UPDATE_TURN_SDS30_ON);
-        nextSleep = 30; // 30s settle time for SDS30
-        task |= 1UL << UPDATE_SENSORS;
-        if (cycle == 0) task |= 1UL << UPDATE_FORECAST;
-    }
-    else if (((task >> UPDATE_SENSORS) & 1U) || ((task >> UPDATE_FORECAST) & 1U)) {
+    unsigned long currentMillis = millis();
 
-        // connect to WiFi as we need to fetch some data
-        if (WiFi.status() != WL_CONNECTED) {
-            connectWifi();
-        }
+    if (currentMillis > (previousMillis + nextSleep * 1000)) {
 
-        if ((task >> UPDATE_SENSORS) & 1U)  {
-            updateSensorData();
+        nextSleep = 0;
+        now = dstAdjusted.time(&dstAbbrev);
+        timeinfo = localtime (&now);
+        Serial.println("After wait: " + String(timeinfo->tm_hour) + ":" + String(timeinfo->tm_min) + ":" + String(timeinfo->tm_sec));
+
+        // perform tasks scheduled
+        if (((task >> UPDATE_TURN_SDS30_ON) & 1U))  {
+            if (sps30_start_measurement() < 0) {
+                Serial.println("Error starting measurement");
+            }
+            else {
+                Serial.println("SPS30 on");
+                sdsState = 1;
+            }
+            // next sleep time and tasks
+            task &= ~(1UL << UPDATE_TURN_SDS30_ON);
+            nextSleep = 30; // 30s settle time for SDS30
+            task |= 1UL << UPDATE_SENSORS;
+            if (cycle == 0) task |= 1UL << UPDATE_FORECAST;
+        }
+        else if ((task >> UPDATE_SENSORS) & 1U) {
+
             task &= ~(1UL << UPDATE_SENSORS);
             ++cycle %= 3;
             lastUpdate = millis();
             sdsState = 0;
+
+            updateSensorData();
+
+            // connect to WiFi as we need to fetch some data
+            if (WiFi.status() != WL_CONNECTED) {
+                connectWifi();
+            }
+
+            if (WiFi.status() == WL_CONNECTED) {
+                sendDataToOpenSenseMap();
+
+                if ((task >> UPDATE_FORECAST) & 1U)  {
+                    updateWeatherData();
+                    task &= ~(1UL << UPDATE_FORECAST);
+                }
+                // disconnect WiFi
+                WiFi.disconnect();
+                while (WiFi.status() == WL_CONNECTED) delay(500);
+                WiFi.mode(WIFI_OFF);
+
+            }
         }
 
-        if ((task >> UPDATE_FORECAST) & 1U)  {
-            updateData();
-            task &= ~(1UL << UPDATE_FORECAST);
+        // update screen
+        gfx.fillBuffer(MINI_BLACK);
+        drawTime();
+        drawWifiQuality();
+        drawForecast(0, 0);
+        drawCurrentWeather();
+        drawSensorValues();
+        gfx.commit();
+
+        // get current time
+        now = dstAdjusted.time(&dstAbbrev);
+        timeinfo = localtime (&now);
+
+        // turn on/off LCD backlight at night
+        if ((timeinfo->tm_hour > 20) || (timeinfo->tm_hour < 6)) { // turn off from 21h - 6h
+            ledcWrite(BACKLIGHT_PWM_CHN, 32);  // set to 12.5%
+        }
+        else {
+            ledcWrite(BACKLIGHT_PWM_CHN, 128);  // set to 50%
         }
 
-        // disconnect WiFi
-        WiFi.disconnect();
-        while (WiFi.status() == WL_CONNECTED) delay(500);
-        dataValid = 1;
+        // nextSleep, if still 0 then get next value
+        if (nextSleep == 0) {
+            // sleep until next minute starts
+            nextSleep = 60 - timeinfo->tm_sec; // wait until next minute increment in order to update time
+
+            // if next sensor read is less than the time until next minute increment away, then wait until sensor update
+            timetoSensorUpdate = (UPDATE_INTERVAL_SECS - 30) - ((millis() - lastUpdate) / 1000);
+            if (timetoSensorUpdate < nextSleep) {
+                nextSleep = timetoSensorUpdate;
+                task |= 1UL << UPDATE_TURN_SDS30_ON;
+            }
+        }
+
+        Serial.println("Seconds to update: " + String(nextSleep));
+        Serial.println("Cycle: " + String(cycle));
+        Serial.println("Task: " + String(task));
+        Serial.println("Before wait: " + String(timeinfo->tm_hour) + ":" + String(timeinfo->tm_min) + ":" + String(timeinfo->tm_sec));
+        previousMillis = millis();
+
+        /*
+            esp_sleep_enable_timer_wakeup(nextSleep * 1000000);
+            Serial.flush();
+            esp_light_sleep_start();
+        */
+
     }
-
-    // update screen
-    gfx.fillBuffer(MINI_BLACK);
-    drawTime();
-    drawWifiQuality();
-    drawForecast(0, 0);
-    drawCurrentWeather();
-    drawTempPM();
-    gfx.commit();
-
-    // get current time
-    now = dstAdjusted.time(&dstAbbrev);
-    timeinfo = localtime (&now);
-
-    // nextSleep, if still 0 then get next value
-    if (nextSleep == 0) {
-        // sleep until next minute starts
-        nextSleep = 60 - timeinfo->tm_sec; // wait until next minute increment in order to update time
-
-        // if next sensor read is less than the time until next minute increment away, then wait until sensor update
-        timetoSensorUpdate = (UPDATE_INTERVAL_SECS - 30) - ((millis() - lastUpdate) / 1000);
-        if (timetoSensorUpdate < nextSleep) {
-            nextSleep = timetoSensorUpdate;
-            task |= 1UL << UPDATE_TURN_SDS30_ON;
-        }
-    }
-
-    Serial.println("Seconds to sleep: " + String(nextSleep));
-    Serial.println("Cycle: " + String(cycle));
-    Serial.println("Task: " + String(task));
-    Serial.println("Before sleep: " + String(timeinfo->tm_hour) + ":" + String(timeinfo->tm_min) + ":" + String(timeinfo->tm_sec));
-
-    esp_sleep_enable_timer_wakeup(nextSleep * 1000000);
-    Serial.flush();
-    esp_light_sleep_start();
-    // delay(nextSleep * 1000);
-
-    now = dstAdjusted.time(&dstAbbrev);
-    timeinfo = localtime (&now);
-    Serial.println("After wakeup: " + String(timeinfo->tm_hour) + ":" + String(timeinfo->tm_min) + ":" + String(timeinfo->tm_sec));
+    delay(100); // this delay saves 20mA :-)
 }
 
 void sendDataToOpenSenseMap() {
@@ -435,12 +458,10 @@ void updateSensorData() {
 
     Serial.print("Typical partical size: ");
     Serial.println(sds30Data.typical_particle_size);
-
-    sendDataToOpenSenseMap();
 }
 
 // Update the internet based information and update screen
-void updateData() {
+void updateWeatherData() {
 
     gfx.fillBuffer(MINI_BLACK);
     gfx.setFont(ArialRoundedMTBold_14);
@@ -482,14 +503,9 @@ void updateData() {
 // Progress bar helper
 void drawProgress(uint8_t percentage, String text) {
     gfx.fillBuffer(MINI_BLACK);
-    gfx.drawPalettedBitmapFromPgm(20, 5, ThingPulseLogo);
-    gfx.setFont(ArialRoundedMTBold_14);
-    gfx.setTextAlignment(TEXT_ALIGN_CENTER);
-    gfx.setColor(MINI_WHITE);
-    gfx.drawString(120, 90, "https://thingpulse.com");
     gfx.setColor(MINI_YELLOW);
 
-    gfx.drawString(120, 146, text);
+    gfx.drawString(0, 146, text);
     gfx.setColor(MINI_WHITE);
     gfx.drawRect(10, 168, 240 - 20, 15);
     gfx.setColor(MINI_BLUE);
@@ -498,7 +514,7 @@ void drawProgress(uint8_t percentage, String text) {
     gfx.commit();
 }
 
-// draws the clock
+// Draw the clock
 void drawTime() {
 
     char time_str[11];
@@ -519,7 +535,6 @@ void drawTime() {
         sprintf(time_str, "%2d:%02d:%02d\n", hour, timeinfo->tm_min, timeinfo->tm_sec);
         gfx.drawString(120, 20, time_str);
     } else {
-        //sprintf(time_str, "%02d:%02d:%02d\n", timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
         sprintf(time_str, "%02d:%02d\n", timeinfo->tm_hour, timeinfo->tm_min);
         gfx.drawString(120, 20, time_str);
     }
@@ -583,7 +598,7 @@ void drawForecastDetail(uint16_t x, uint16_t y, uint8_t dayIndex) {
     gfx.drawString(x + 25, y + 60, String(forecasts[dayIndex].rain, 1) + (IS_METRIC ? "mm" : "in"));
 }
 
-void drawTempPM() {
+void drawSensorValues() {
     gfx.setTextAlignment(TEXT_ALIGN_LEFT);
     gfx.setColor(MINI_YELLOW);
     gfx.drawString(5, 250, "Temp:");
@@ -630,17 +645,4 @@ void drawWifiQuality() {
             }
         }
     }
-}
-
-void calibrationCallback(int16_t x, int16_t y) {
-    gfx.setColor(1);
-    gfx.fillCircle(x, y, 10);
-}
-
-String getTime(time_t *timestamp) {
-    struct tm *timeInfo = gmtime(timestamp);
-
-    char buf[6];
-    sprintf(buf, "%02d:%02d", timeInfo->tm_hour, timeInfo->tm_min);
-    return String(buf);
 }
