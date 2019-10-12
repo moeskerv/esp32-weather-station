@@ -5,7 +5,7 @@ forked from [ThingPulse/esp8266-weather-station-color](https://github.com/ThingP
 modified to 
 - support Adafruit HUZZAH32 in combination with TFT FeatherWing - 2.4" (no touch screen support)
 - Openweather only
-- local sensors (BME280 and SCS30)
+- local sensors (BME280 and SPS30)
 - uploading sensor data to OpenSenseMap
 
 
