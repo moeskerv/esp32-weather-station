@@ -1,4 +1,4 @@
-# ESP32 Weather Station Color
+# ESP32 Weather Station
 
 forked from [ThingPulse/esp8266-weather-station-color](https://github.com/ThingPulse/esp8266-weather-station-color)
 
