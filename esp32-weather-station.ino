@@ -315,13 +315,6 @@ void loop() {
         Serial.println("Task: " + String(task));
         Serial.println("Before wait: " + String(timeinfo->tm_hour) + ":" + String(timeinfo->tm_min) + ":" + String(timeinfo->tm_sec));
         previousMillis = millis();
-
-        /*
-            esp_sleep_enable_timer_wakeup(nextSleep * 1000000);
-            Serial.flush();
-            esp_light_sleep_start();
-        */
-
     }
     delay(100); // this delay saves 20mA :-)
 }
