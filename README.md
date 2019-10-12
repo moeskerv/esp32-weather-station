@@ -25,5 +25,15 @@ modified to
 
 You can pretty much follow the guide from Adafruit here: [Adafruit Wifi Weather Station](https://learn.adafruit.com/wifi-weather-station-with-tft-display/overview) and use the code provided here.
 
+Basically the following things are to be setup once you are able to compile the code:
+
+Add your individual information in the settings_private.h:
+- Wifi credential (you can configure 2 networks)
+- Openweather account data, desired city, language
+- OpenSenseMap account data (sensebox ID and sensor IDs)
+
+Have fun!
+
+
 
 
