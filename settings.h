@@ -20,7 +20,8 @@
 
 #include <simpleDSTadjust.h>
 
-const int UPDATE_INTERVAL_SECS = 5 * 60; // Update interval in seconds
+#define UPDATE_INTERVAL_SECS  300 // Update interval in seconds
+#define SDS30_SETTLE_SECS 30 // SDS30 settle time in seconds
 
 #define UPDATE_TURN_SDS30_ON    0
 #define UPDATE_SENSORS          1

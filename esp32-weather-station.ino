@@ -63,7 +63,6 @@ int BITS_PER_PIXEL = 2; // 2^2 =  4 colors
 
 ILI9341_SPI tft = ILI9341_SPI(TFT_CS, TFT_DC);
 MiniGrafx gfx = MiniGrafx(&tft, BITS_PER_PIXEL, palette);
-//Carousel carousel(&gfx, 0, 0, 240, 100);
 
 OpenWeatherMapCurrentData currentWeather;
 OpenWeatherMapForecastData forecasts[MAX_FORECASTS];
@@ -80,11 +79,9 @@ void drawForecast(int16_t x, int16_t y);
 void drawForecastDetail(uint16_t x, uint16_t y, uint8_t dayIndex);
 void drawSensorValues();
 
-String getTime(time_t *timestamp);
 const char* getMeteoconIconFromProgmem(String iconText);
 const char* getMiniMeteoconIconFromProgmem(String iconText);
 
-long lastUpdate = millis();
 time_t dstOffset = 0;
 float temp = 0;
 float humidity = 0;
@@ -95,6 +92,8 @@ struct sps30_measurement sds30Data;
 void connectWifi() {
 
     static int network = 0;
+
+    drawProgress(50, "Connecting to WiFi...");
 
     if (WiFi.status() == WL_CONNECTED) return;
 
@@ -112,7 +111,6 @@ void connectWifi() {
         WiFi.begin(WIFI_SSID1, WIFI_PASS1);
 
         for (i = 0; i < 10; i ++) {
-            //drawProgress(i, "Connecting to WiFi '" + String(WIFI_SSID1) + "'");
             delay(1000);
             Serial.print(".");
             if (WiFi.status() == WL_CONNECTED) {
@@ -136,7 +134,6 @@ void connectWifi() {
             WiFi.begin(WIFI_SSID2, WIFI_PASS2);
 
             for (i = 0; i < 10; i ++) {
-                //drawProgress(i, "Connecting to WiFi '" + String(WIFI_SSID2) + "'");
                 delay(1000);
                 Serial.print(".");
                 if (WiFi.status() == WL_CONNECTED) {
@@ -147,7 +144,9 @@ void connectWifi() {
         }
     }
 
-    if (WiFi.status() == WL_CONNECTED) Serial.println("Connected...");
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("Connected...");
+    }
     else {
         Serial.println("No WIFI found...");
         WiFi.disconnect();
@@ -163,7 +162,7 @@ void setup() {
     pinMode(TFT_LED, OUTPUT);
     digitalWrite(TFT_LED, HIGH);    // LOW to Turn on;
 
-    // configure backlight PWM, does not work in sleep mode!
+    // configure backlight PWM
     ledcSetup(BACKLIGHT_PWM_CHN, BACKLIGHT_PWM_FRQ, BACKLIGHT_PWM_RES);
     ledcAttachPin(TFT_LED, BACKLIGHT_PWM_CHN);
     ledcWrite(BACKLIGHT_PWM_CHN, 128);  // set to 50%
@@ -171,15 +170,6 @@ void setup() {
     gfx.init();
     gfx.fillBuffer(MINI_BLACK);
     gfx.commit();
-
-    Serial.println("Mounting file system...");
-    bool isFSMounted = SPIFFS.begin();
-    if (!isFSMounted) {
-        Serial.println("Formatting file system...");
-        drawProgress(50, "Formatting file system");
-        SPIFFS.format();
-    }
-    drawProgress(100, "Formatting done");
 
     // start BME280
     if (!bme280.begin()) {
@@ -205,7 +195,7 @@ void setup() {
         Serial.println(result);
     }
 
-    // enable Wifi modem sleep
+    // set RF modem to sleep
     esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
     btStop();
     WiFi.mode(WIFI_OFF);
@@ -215,24 +205,14 @@ void loop() {
 
     static int cycle = 0;
     static int task = 1 << UPDATE_TURN_SDS30_ON;
-    static unsigned long previousMillis = 0;
-    static int nextSleep = 0;
+    static unsigned long nextMillis = 0;
+    static int lastSecond = 60;
 
-    int timetoSensorUpdate = 0;
     char *dstAbbrev;
     time_t now;
     struct tm * timeinfo;
 
-    unsigned long currentMillis = millis();
-
-    if (currentMillis > (previousMillis + nextSleep * 1000)) {
-
-        nextSleep = 0;
-        now = dstAdjusted.time(&dstAbbrev);
-        timeinfo = localtime (&now);
-        Serial.println("After wait: " + String(timeinfo->tm_hour) + ":" + String(timeinfo->tm_min) + ":" + String(timeinfo->tm_sec));
-
-        // perform tasks scheduled
+    if (millis() >= nextMillis) { // if it is time, perform tasks scheduled
         if (((task >> UPDATE_TURN_SDS30_ON) & 1U))  {
             if (sps30_start_measurement() < 0) {
                 Serial.println("Error starting measurement");
@@ -243,15 +223,14 @@ void loop() {
             }
             // next sleep time and tasks
             task &= ~(1UL << UPDATE_TURN_SDS30_ON);
-            nextSleep = 30; // 30s settle time for SDS30
             task |= 1UL << UPDATE_SENSORS;
             if (cycle == 0) task |= 1UL << UPDATE_FORECAST;
+            nextMillis = millis() + SDS30_SETTLE_SECS * 1000; // next task in 30s
         }
         else if ((task >> UPDATE_SENSORS) & 1U) {
 
             task &= ~(1UL << UPDATE_SENSORS);
             ++cycle %= 3;
-            lastUpdate = millis();
             sdsState = 0;
 
             updateSensorData();
@@ -274,18 +253,12 @@ void loop() {
                 WiFi.mode(WIFI_OFF);
 
             }
+            // shedule next task
+            nextMillis = millis() +  (UPDATE_INTERVAL_SECS - SDS30_SETTLE_SECS) * 1000;
+            task |= 1UL << UPDATE_TURN_SDS30_ON;
         }
 
-        // update screen
-        gfx.fillBuffer(MINI_BLACK);
-        drawTime();
-        drawWifiQuality();
-        drawForecast(0, 0);
-        drawCurrentWeather();
-        drawSensorValues();
-        gfx.commit();
-
-        // get current time
+        // set display brightness depending on time
         now = dstAdjusted.time(&dstAbbrev);
         timeinfo = localtime (&now);
 
@@ -297,29 +270,30 @@ void loop() {
             ledcWrite(BACKLIGHT_PWM_CHN, 128);  // set to 50%
         }
 
-        // nextSleep, if still 0 then get next value
-        if (nextSleep == 0) {
-            // sleep until next minute starts
-            nextSleep = 60 - timeinfo->tm_sec; // wait until next minute increment in order to update time
-
-            // if next sensor read is less than the time until next minute increment away, then wait until sensor update
-            timetoSensorUpdate = (UPDATE_INTERVAL_SECS - 30) - ((millis() - lastUpdate) / 1000);
-            if (timetoSensorUpdate < nextSleep) {
-                nextSleep = timetoSensorUpdate;
-                task |= 1UL << UPDATE_TURN_SDS30_ON;
-            }
-        }
-
-        Serial.println("Seconds to update: " + String(nextSleep));
-        Serial.println("Cycle: " + String(cycle));
-        Serial.println("Task: " + String(task));
-        Serial.println("Before wait: " + String(timeinfo->tm_hour) + ":" + String(timeinfo->tm_min) + ":" + String(timeinfo->tm_sec));
-        previousMillis = millis();
     }
-    delay(100); // this delay saves 20mA :-)
+
+    // get current time and check if the display has to be updated
+    now = dstAdjusted.time(&dstAbbrev);
+    timeinfo = localtime (&now);
+
+    if (timeinfo->tm_sec != lastSecond) {
+        lastSecond = timeinfo->tm_sec;
+        // update screen
+        gfx.fillBuffer(MINI_BLACK);
+        drawTime();
+        drawWifiQuality();
+        drawForecast(0, 0);
+        drawCurrentWeather();
+        drawSensorValues();
+        gfx.commit();
+    }
+
+    delay(100); // wait 100ms
 }
 
 void sendDataToOpenSenseMap() {
+
+    drawProgress(70, "Sending data to OSM...");
 
     // print time in serial log
     char *dstAbbrev;
@@ -339,10 +313,6 @@ void sendDataToOpenSenseMap() {
     json[SENSOR5_ID] = String(sds30Data.mc_4p0, 2);
     json[SENSOR6_ID] = String(sds30Data.mc_2p5, 2);
     json[SENSOR7_ID] = String(sds30Data.mc_1p0, 2);
-
-    char JSONmessageBuffer[300];
-    serializeJson(json, JSONmessageBuffer);
-    Serial.println(JSONmessageBuffer);
 
     // create HTTPS request
     WiFiClientSecure client;
@@ -375,12 +345,16 @@ void sendDataToOpenSenseMap() {
             char c = client.read();
             Serial.write(c);
         }
+        Serial.println();
         client.stop();
     }
 }
 
 // Update the sensor data
 void updateSensorData() {
+
+    // show progress bar
+    drawProgress(10, "Updating sensor readings...");
 
     // get readings from BME280 sensor
     bme280.takeForcedMeasurement();
@@ -471,6 +445,7 @@ void updateWeatherData() {
     Serial.printf("Time difference for DST: %d\n", dstOffset);
 
     drawProgress(50, "Updating conditions...");
+    Serial.println("Updating conditions...");
     OpenWeatherMapCurrent *currentWeatherClient = new OpenWeatherMapCurrent();
     currentWeatherClient->setMetric(IS_METRIC);
     currentWeatherClient->setLanguage(OPEN_WEATHER_MAP_LANGUAGE);
@@ -480,6 +455,7 @@ void updateWeatherData() {
     currentWeatherClient = nullptr;
 
     drawProgress(70, "Updating forecasts...");
+    Serial.println("Updating forecasts...");
     OpenWeatherMapForecast *forecastClient = new OpenWeatherMapForecast();
     forecastClient->setMetric(IS_METRIC);
     forecastClient->setLanguage(OPEN_WEATHER_MAP_LANGUAGE);
@@ -528,7 +504,7 @@ void drawTime() {
         sprintf(time_str, "%2d:%02d:%02d\n", hour, timeinfo->tm_min, timeinfo->tm_sec);
         gfx.drawString(120, 20, time_str);
     } else {
-        sprintf(time_str, "%02d:%02d\n", timeinfo->tm_hour, timeinfo->tm_min);
+        sprintf(time_str, "%2d:%02d:%02d\n", timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
         gfx.drawString(120, 20, time_str);
     }
 
