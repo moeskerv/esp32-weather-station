@@ -86,7 +86,7 @@ time_t dstOffset = 0;
 float temp = 0;
 float humidity = 0;
 float pressure = 0;
-int sdsState = 0;
+int spsState = 0;
 struct sps30_measurement sds30Data;
 
 void connectWifi() {
@@ -219,7 +219,7 @@ void loop() {
             }
             else {
                 Serial.println("SPS30 on");
-                sdsState = 1;
+                spsState = 1;
             }
             // next sleep time and tasks
             task &= ~(1UL << UPDATE_TURN_SDS30_ON);
@@ -231,7 +231,7 @@ void loop() {
 
             task &= ~(1UL << UPDATE_SENSORS);
             ++cycle %= 3;
-            sdsState = 0;
+            spsState = 0;
 
             updateSensorData();
 
@@ -573,7 +573,7 @@ void drawSensorValues() {
     gfx.drawString(5, 250, "Temp:");
     gfx.drawString(5, 265, "Druck:");
     gfx.drawString(5, 280, "rel. LF:");
-    gfx.drawString(5, 295, "SDS30:");
+    gfx.drawString(5, 295, "SPS30:");
     gfx.drawString(145, 250, "PM 1.0:");
     gfx.drawString(145, 265, "PM 2.5:");
     gfx.drawString(145, 280, "PM 4.0:");
@@ -583,7 +583,7 @@ void drawSensorValues() {
     gfx.drawString(70, 250, String(temp, 1) + "°C");
     gfx.drawString(70, 265, String(pressure, 1));
     gfx.drawString(70, 280, String(humidity, 0) + " %");
-    gfx.drawString(70, 295, sdsState ? "An" : "Aus");
+    gfx.drawString(70, 295, spsState ? "An" : "Aus");
     gfx.drawString(205, 250, String(sds30Data.mc_1p0, 1));
     gfx.drawString(205, 265, String(sds30Data.mc_2p5, 1));
     gfx.drawString(205, 280, String(sds30Data.mc_4p0, 1));
