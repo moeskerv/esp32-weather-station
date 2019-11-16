@@ -316,9 +316,9 @@ void sendDataToOpenSenseMap() {
 
     // create HTTPS request
     WiFiClientSecure client;
-    if (!client.connect("api.opensensemap.org", 443)) {
+    if (!client.connect("api.opensensemap.org", 443, 30000)) {
         Serial.println("Connection failed");
-        ESP.restart();
+        //ESP.restart();
     }
     else {
         Serial.println("Connected to OSM server");
@@ -529,18 +529,18 @@ void drawCurrentWeather() {
     gfx.setFont(ArialRoundedMTBold_14);
     gfx.setColor(MINI_BLUE);
     gfx.setTextAlignment(TEXT_ALIGN_RIGHT);
-    gfx.drawString(220, 65, currentWeather.cityName);
+    gfx.drawString(235, 65, currentWeather.cityName);
 
     gfx.setFont(ArialRoundedMTBold_36);
     gfx.setColor(MINI_WHITE);
     gfx.setTextAlignment(TEXT_ALIGN_RIGHT);
 
-    gfx.drawString(220, 78, String(currentWeather.temp, 1) + (IS_METRIC ? "°C" : "°F"));
+    gfx.drawString(232, 78, String(currentWeather.temp, 1) + (IS_METRIC ? "°C" : "°F"));
 
     gfx.setFont(ArialRoundedMTBold_14);
     gfx.setColor(MINI_YELLOW);
     gfx.setTextAlignment(TEXT_ALIGN_RIGHT);
-    gfx.drawString(220, 118, currentWeather.description);
+    gfx.drawString(232, 118, currentWeather.description);
 
 }
 
@@ -570,24 +570,24 @@ void drawForecastDetail(uint16_t x, uint16_t y, uint8_t dayIndex) {
 void drawSensorValues() {
     gfx.setTextAlignment(TEXT_ALIGN_LEFT);
     gfx.setColor(MINI_YELLOW);
-    gfx.drawString(5, 250, "Temp:");
-    gfx.drawString(5, 265, "Druck:");
-    gfx.drawString(5, 280, "rel. LF:");
-    gfx.drawString(5, 295, "SPS30:");
-    gfx.drawString(145, 250, "PM 1.0:");
-    gfx.drawString(145, 265, "PM 2.5:");
-    gfx.drawString(145, 280, "PM 4.0:");
-    gfx.drawString(145, 295, "PM 10.0:");
+    gfx.drawString(10, 250, "Temp:");
+    gfx.drawString(10, 265, "Druck:");
+    gfx.drawString(10, 280, "rel. LF:");
+    gfx.drawString(10, 295, "SPS30:");
+    gfx.drawString(150, 250, "PM 1.0:");
+    gfx.drawString(150, 265, "PM 2.5:");
+    gfx.drawString(150, 280, "PM 4.0:");
+    gfx.drawString(150, 295, "PM 10.0:");
 
     gfx.setColor(MINI_WHITE);
-    gfx.drawString(70, 250, String(temp, 1) + "°C");
-    gfx.drawString(70, 265, String(pressure, 1));
-    gfx.drawString(70, 280, String(humidity, 0) + " %");
-    gfx.drawString(70, 295, spsState ? "An" : "Aus");
-    gfx.drawString(205, 250, String(sds30Data.mc_1p0, 1));
-    gfx.drawString(205, 265, String(sds30Data.mc_2p5, 1));
-    gfx.drawString(205, 280, String(sds30Data.mc_4p0, 1));
-    gfx.drawString(205, 295, String(sds30Data.mc_10p0, 1));
+    gfx.drawString(80, 250, String(temp, 1) + "°C");
+    gfx.drawString(80, 265, String(pressure, 1));
+    gfx.drawString(80, 280, String(humidity, 0) + " %");
+    gfx.drawString(80, 295, spsState ? "An" : "Aus");
+    gfx.drawString(210, 250, String(sds30Data.mc_1p0, 1));
+    gfx.drawString(210, 265, String(sds30Data.mc_2p5, 1));
+    gfx.drawString(210, 280, String(sds30Data.mc_4p0, 1));
+    gfx.drawString(210, 295, String(sds30Data.mc_10p0, 1));
 }
 
 // converts the dBm to a range between 0 and 100%
