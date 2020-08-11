@@ -87,7 +87,7 @@ float temp = 0;
 float humidity = 0;
 float pressure = 0;
 int spsState = 0;
-struct sps30_measurement sds30Data;
+struct sps30_measurement sps30Data;
 
 void connectWifi() {
 
@@ -154,7 +154,7 @@ void connectWifi() {
 }
 
 void setup() {
-    s16 result;
+    int16_t result;
 
     Serial.begin(115200);
 
@@ -309,10 +309,10 @@ void sendDataToOpenSenseMap() {
     json[SENSOR1_ID] = String(temp, 2);
     json[SENSOR2_ID] = String(pressure, 2);
     json[SENSOR3_ID] = String(humidity, 2);
-    json[SENSOR4_ID] = String(sds30Data.mc_10p0, 2);
-    json[SENSOR5_ID] = String(sds30Data.mc_4p0, 2);
-    json[SENSOR6_ID] = String(sds30Data.mc_2p5, 2);
-    json[SENSOR7_ID] = String(sds30Data.mc_1p0, 2);
+    json[SENSOR4_ID] = String(sps30Data.mc_10p0, 2);
+    json[SENSOR5_ID] = String(sps30Data.mc_4p0, 2);
+    json[SENSOR6_ID] = String(sps30Data.mc_2p5, 2);
+    json[SENSOR7_ID] = String(sps30Data.mc_1p0, 2);
 
     // create HTTPS request
     WiFiClientSecure client;
@@ -371,8 +371,8 @@ void updateSensorData() {
     Serial.println(humidity);
 
     // get readngs from SDS30 sensor
-    s16 result = 0;
-    u16 data_ready = 0;
+    int16_t result = 0;
+    uint16_t data_ready = 0;
     /*
         result = sps30_start_measurement();
         if (result < 0) {
@@ -393,7 +393,7 @@ void updateSensorData() {
         delay(100); /* retry in 100ms */
     } while (1);
 
-    result = sps30_read_measurement(&sds30Data);
+    result = sps30_read_measurement(&sps30Data);
     if (result < 0) {
         Serial.println("error reading measurement");
     }
@@ -405,26 +405,26 @@ void updateSensorData() {
 
     Serial.println("Updated SDS30 data: ");
     Serial.print("PM  1.0: ");
-    Serial.println(sds30Data.mc_1p0);
+    Serial.println(sps30Data.mc_1p0);
     Serial.print("PM  2.5: ");
-    Serial.println(sds30Data.mc_2p5);
+    Serial.println(sps30Data.mc_2p5);
     Serial.print("PM  4.0: ");
-    Serial.println(sds30Data.mc_4p0);
+    Serial.println(sps30Data.mc_4p0);
     Serial.print("PM 10.0: ");
-    Serial.println(sds30Data.mc_10p0);
+    Serial.println(sps30Data.mc_10p0);
     Serial.print("NC  0.5: ");
-    Serial.println(sds30Data.nc_0p5);
+    Serial.println(sps30Data.nc_0p5);
     Serial.print("NC  1.0: ");
-    Serial.println(sds30Data.nc_1p0);
+    Serial.println(sps30Data.nc_1p0);
     Serial.print("NC  2.5: ");
-    Serial.println(sds30Data.nc_2p5);
+    Serial.println(sps30Data.nc_2p5);
     Serial.print("NC  4.0: ");
-    Serial.println(sds30Data.nc_4p0);
+    Serial.println(sps30Data.nc_4p0);
     Serial.print("NC 10.0: ");
-    Serial.println(sds30Data.nc_10p0);
+    Serial.println(sps30Data.nc_10p0);
 
     Serial.print("Typical partical size: ");
-    Serial.println(sds30Data.typical_particle_size);
+    Serial.println(sps30Data.typical_particle_size);
 }
 
 // Update the internet based information and update screen
@@ -584,10 +584,10 @@ void drawSensorValues() {
     gfx.drawString(80, 265, String(pressure, 1));
     gfx.drawString(80, 280, String(humidity, 0) + " %");
     gfx.drawString(80, 295, spsState ? "An" : "Aus");
-    gfx.drawString(210, 250, String(sds30Data.mc_1p0, 1));
-    gfx.drawString(210, 265, String(sds30Data.mc_2p5, 1));
-    gfx.drawString(210, 280, String(sds30Data.mc_4p0, 1));
-    gfx.drawString(210, 295, String(sds30Data.mc_10p0, 1));
+    gfx.drawString(210, 250, String(sps30Data.mc_1p0, 1));
+    gfx.drawString(210, 265, String(sps30Data.mc_2p5, 1));
+    gfx.drawString(210, 280, String(sps30Data.mc_4p0, 1));
+    gfx.drawString(210, 295, String(sps30Data.mc_10p0, 1));
 }
 
 // converts the dBm to a range between 0 and 100%
