@@ -59,7 +59,7 @@ uint16_t palette[] = {ILI9341_BLACK, // 0
                       ILI9341_WHITE, // 1
                       ILI9341_YELLOW, // 2
                       0x7E3C
-                     }; //3
+                     };
 
 // Limited to 4 colors due to memory constraints
 int BITS_PER_PIXEL = 2; // 2^2 =  4 colors
@@ -193,6 +193,15 @@ void setup() {
 
     Serial.println("Found BME280 sensor...");
 
+    // setup scd30 CO2 sensor
+    if (CO2Sensor.begin() == false)
+    {
+        Serial.println("SCD sensor probing failed, check wiring!");
+        while (1);
+    }
+    CO2Sensor.setMeasurementInterval(30);
+    Serial.println("Found SCD30 sensor...");
+
     // start SPS30
     while (sps30_probe() != 0) {
         Serial.print("SPS sensor probing failed\n");
@@ -209,16 +218,6 @@ void setup() {
     esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
     btStop();
     WiFi.mode(WIFI_OFF);
-
-    // setup scd30 CO2 sensor
-    if (CO2Sensor.begin() == false)
-    {
-        Serial.println("Air sensor not detected. Please check wiring. Freezing...");
-        while (1)
-        ;
-    }
-    CO2Sensor.setMeasurementInterval(30);
-    Serial.println("Found SCD30 sensor...");
 }
 
 void loop() {
@@ -619,8 +618,7 @@ void drawSensorValues() {
     gfx.drawString(80, 250, String(temp, 1) + "°C");
     gfx.drawString(80, 265, String(pressure, 1));
     gfx.drawString(80, 280, String(humidity, 0) + " %");
-    //gfx.drawString(80, 295, String(co2));
-    //gfx.drawString(80, 295, spsState ? "An" : "Aus");
+    gfx.drawString(80, 295, String(co2) + "ppm");
     gfx.drawString(210, 250, String(sps30Data.mc_1p0, 1));
     gfx.drawString(210, 265, String(sps30Data.mc_2p5, 1));
     gfx.drawString(210, 280, String(sps30Data.mc_4p0, 1));
