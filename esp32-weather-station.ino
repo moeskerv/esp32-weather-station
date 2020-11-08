@@ -34,6 +34,9 @@
 #include <ILI9341_SPI.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include "SparkFun_SCD30_Arduino_Library.h"
+
+#include "driver/ledc.h"
 
 #include "settings.h"
 #include "settings_private.h"
@@ -50,6 +53,8 @@
 #define BACKLIGHT_PWM_FRQ 5000
 #define BACKLIGHT_PWM_RES 8
 #define BACKLIGHT_PWM_CHN 0
+#define BACKLIGHT_PWM_DAY 128
+#define BACKLIGHT_PWM_NIGHT 32
 
 // defines the colors usable in the paletted 16 color frame buffer
 uint16_t palette[] = {ILI9341_BLACK, // 0
@@ -68,6 +73,7 @@ OpenWeatherMapCurrentData currentWeather;
 OpenWeatherMapForecastData forecasts[MAX_FORECASTS];
 simpleDSTadjust dstAdjusted(StartRule, EndRule);
 Adafruit_BME280 bme280;
+SCD30 CO2Sensor;
 
 void updateWeatherData();
 void updateSensorData();
@@ -78,6 +84,7 @@ void drawCurrentWeather();
 void drawForecast(int16_t x, int16_t y);
 void drawForecastDetail(uint16_t x, uint16_t y, uint8_t dayIndex);
 void drawSensorValues();
+void sendDataToOpenSenseMap();
 
 const char* getMeteoconIconFromProgmem(String iconText);
 const char* getMiniMeteoconIconFromProgmem(String iconText);
@@ -88,6 +95,7 @@ float humidity = 0;
 float pressure = 0;
 int spsState = 0;
 struct sps30_measurement sps30Data;
+uint16_t CO2 = 0;
 
 void connectWifi() {
 
@@ -165,7 +173,7 @@ void setup() {
     // configure backlight PWM
     ledcSetup(BACKLIGHT_PWM_CHN, BACKLIGHT_PWM_FRQ, BACKLIGHT_PWM_RES);
     ledcAttachPin(TFT_LED, BACKLIGHT_PWM_CHN);
-    ledcWrite(BACKLIGHT_PWM_CHN, 128);  // set to 50%
+    ledcWrite(BACKLIGHT_PWM_CHN, BACKLIGHT_PWM_DAY);  // set to day level
 
     gfx.init();
     gfx.fillBuffer(MINI_BLACK);
@@ -176,11 +184,15 @@ void setup() {
         Serial.println("Could not find a valid BME280 sensor, check wiring!");
         while (1);
     }
+
+    // set to single sampling and force mode to save power and keep sensor cool
     bme280.setSampling(Adafruit_BME280::MODE_FORCED,
                        Adafruit_BME280::SAMPLING_X1, // temperature
                        Adafruit_BME280::SAMPLING_X1, // pressure
                        Adafruit_BME280::SAMPLING_X1, // humidity
-                       Adafruit_BME280::FILTER_OFF   );
+                       Adafruit_BME280::FILTER_OFF,
+                       Adafruit_BME280::STANDBY_MS_1000);
+
     Serial.println("Found BME280 sensor...");
 
     // start SPS30
@@ -199,6 +211,16 @@ void setup() {
     esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
     btStop();
     WiFi.mode(WIFI_OFF);
+
+    // setup scd30 CO2 sensor
+    if (CO2Sensor.begin() == false)
+    {
+        Serial.println("Air sensor not detected. Please check wiring. Freezing...");
+        while (1)
+        ;
+    }
+    CO2Sensor.setMeasurementInterval(30);
+    Serial.println("Found SCD30 sensor...");
 }
 
 void loop() {
@@ -214,6 +236,7 @@ void loop() {
 
     if (millis() >= nextMillis) { // if it is time, perform tasks scheduled
         if (((task >> UPDATE_TURN_SDS30_ON) & 1U))  {
+
             if (sps30_start_measurement() < 0) {
                 Serial.println("Error starting measurement");
             }
@@ -221,6 +244,7 @@ void loop() {
                 Serial.println("SPS30 on");
                 spsState = 1;
             }
+
             // next sleep time and tasks
             task &= ~(1UL << UPDATE_TURN_SDS30_ON);
             task |= 1UL << UPDATE_SENSORS;
@@ -264,10 +288,10 @@ void loop() {
 
         // turn on/off LCD backlight at night
         if ((timeinfo->tm_hour > 20) || (timeinfo->tm_hour < 6)) { // turn off from 21h - 6h
-            ledcWrite(BACKLIGHT_PWM_CHN, 32);  // set to 12.5%
+            ledcWrite(BACKLIGHT_PWM_CHN, BACKLIGHT_PWM_NIGHT);
         }
         else {
-            ledcWrite(BACKLIGHT_PWM_CHN, 128);  // set to 50%
+            ledcWrite(BACKLIGHT_PWM_CHN, BACKLIGHT_PWM_DAY);
         }
 
     }
@@ -289,6 +313,9 @@ void loop() {
     }
 
     delay(100); // wait 100ms
+    // using a light sleep here will cause the PWM for the display to halt...
+    // esp_sleep_enable_timer_wakeup(100000); //100ms
+    // int ret = esp_light_sleep_start();
 }
 
 void sendDataToOpenSenseMap() {
@@ -359,7 +386,7 @@ void updateSensorData() {
     // get readings from BME280 sensor
     bme280.takeForcedMeasurement();
     delay(100);
-    temp = bme280.readTemperature();
+    temp = bme280.readTemperature() - 2; // subtract 2 as dirty workaround -> housing heats up due to display
     pressure = bme280.readPressure() / 100;
     humidity = bme280.readHumidity();
 
@@ -425,7 +452,16 @@ void updateSensorData() {
 
     Serial.print("Typical partical size: ");
     Serial.println(sps30Data.typical_particle_size);
+
+    // get CO2 data from SCD30
+    while (!CO2Sensor.dataAvailable()) {
+        delay(500);
+    }
+    CO2 = CO2Sensor.getCO2();
+    Serial.print("Updated SCD30 data: ");
+    Serial.println(CO2);
 }
+
 
 // Update the internet based information and update screen
 void updateWeatherData() {
@@ -573,7 +609,7 @@ void drawSensorValues() {
     gfx.drawString(10, 250, "Temp:");
     gfx.drawString(10, 265, "Druck:");
     gfx.drawString(10, 280, "rel. LF:");
-    gfx.drawString(10, 295, "SPS30:");
+    gfx.drawString(10, 295, "CO2:");
     gfx.drawString(150, 250, "PM 1.0:");
     gfx.drawString(150, 265, "PM 2.5:");
     gfx.drawString(150, 280, "PM 4.0:");
@@ -583,7 +619,7 @@ void drawSensorValues() {
     gfx.drawString(80, 250, String(temp, 1) + "°C");
     gfx.drawString(80, 265, String(pressure, 1));
     gfx.drawString(80, 280, String(humidity, 0) + " %");
-    gfx.drawString(80, 295, spsState ? "An" : "Aus");
+//    gfx.drawString(80, 295, String(CO2,0) + "ppm");
     gfx.drawString(210, 250, String(sps30Data.mc_1p0, 1));
     gfx.drawString(210, 265, String(sps30Data.mc_2p5, 1));
     gfx.drawString(210, 280, String(sps30Data.mc_4p0, 1));
