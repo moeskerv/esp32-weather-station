@@ -36,8 +36,6 @@
 #include <esp_wifi.h>
 #include "SparkFun_SCD30_Arduino_Library.h"
 
-#include "driver/ledc.h"
-
 #include "settings.h"
 #include "settings_private.h"
 #include "ArialRounded.h"
@@ -95,7 +93,7 @@ float humidity = 0;
 float pressure = 0;
 int spsState = 0;
 struct sps30_measurement sps30Data;
-uint16_t CO2 = 0;
+uint16_t co2 = 0;
 
 void connectWifi() {
 
@@ -340,6 +338,7 @@ void sendDataToOpenSenseMap() {
     json[SENSOR5_ID] = String(sps30Data.mc_4p0, 2);
     json[SENSOR6_ID] = String(sps30Data.mc_2p5, 2);
     json[SENSOR7_ID] = String(sps30Data.mc_1p0, 2);
+    json[SENSOR8_ID] = String(co2);
 
     // create HTTPS request
     WiFiClientSecure client;
@@ -457,9 +456,9 @@ void updateSensorData() {
     while (!CO2Sensor.dataAvailable()) {
         delay(500);
     }
-    CO2 = CO2Sensor.getCO2();
+    co2 = CO2Sensor.getCO2();
     Serial.print("Updated SCD30 data: ");
-    Serial.println(CO2);
+    Serial.println(co2);
 }
 
 
@@ -610,6 +609,7 @@ void drawSensorValues() {
     gfx.drawString(10, 265, "Druck:");
     gfx.drawString(10, 280, "rel. LF:");
     gfx.drawString(10, 295, "CO2:");
+    //gfx.drawString(10, 295, "SPS30:");
     gfx.drawString(150, 250, "PM 1.0:");
     gfx.drawString(150, 265, "PM 2.5:");
     gfx.drawString(150, 280, "PM 4.0:");
@@ -619,7 +619,8 @@ void drawSensorValues() {
     gfx.drawString(80, 250, String(temp, 1) + "°C");
     gfx.drawString(80, 265, String(pressure, 1));
     gfx.drawString(80, 280, String(humidity, 0) + " %");
-//    gfx.drawString(80, 295, String(CO2,0) + "ppm");
+    //gfx.drawString(80, 295, String(co2));
+    //gfx.drawString(80, 295, spsState ? "An" : "Aus");
     gfx.drawString(210, 250, String(sps30Data.mc_1p0, 1));
     gfx.drawString(210, 265, String(sps30Data.mc_2p5, 1));
     gfx.drawString(210, 280, String(sps30Data.mc_4p0, 1));
